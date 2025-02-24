@@ -30,6 +30,27 @@ Resources:
                   - "rekognition:DetectFaces"
                 Resource: "*"
 
+  # IAM Role for Amplify to Access S3 Code Bucket
+  AmplifyS3AccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action: "sts:AssumeRole"
+            Principal:
+              Service: "amplify.amazonaws.com"
+      Policies:
+        - PolicyName: AmplifyS3AccessPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                Resource: !Sub "arn:aws:s3:::${your-s3-bucket-name}/*" # Grant permission to your S3 bucket
+
   # Lambda Function for Image Processing (Text Extraction and Face Recognition)
   ImageProcessorLambda:
     Type: AWS::Lambda::Function
@@ -97,13 +118,12 @@ Resources:
       FunctionName: !Ref ImageProcessorLambda
       Principal: apigateway.amazonaws.com
 
-  # Amplify Web App Hosting (Deployment from S3)
+ # Amplify Web App Hosting (Deployment from S3 Bucket)
   AmplifyApp:
     Type: AWS::Amplify::App
     Properties:
       Name: WebApp
-      Repository: "https://github.com/your/repository"  # Optional if using GitHub repo, remove if using S3
-      OauthToken: !Sub "{{resolve:secretsmanager:GitHubOAuthToken:SecretString:GitHubOAuthToken}}" # Optional for GitHub OAuth Token if using GitHub
+      # Removed GitHub integration, using S3 as the source
       BuildSpec: |
         version: 1.0
         frontend:
@@ -121,6 +141,14 @@ Resources:
       EnvironmentVariables:
         - Name: API_URL
           Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/dev/process-image"
+      CustomRules:
+        - Source: "/<*>"
+          Target: "/index.html"
+          Status: "200"
+      Source: 
+        BucketName: uco-cicc-media  # This should be your S3 bucket where your code is located
+        Key: "proj3/index.zip"    # The key to the ZIP file in your S3 bucket
+      AccessRole: !Ref AmplifyS3AccessRole # Reference the IAM Role you created for S3 access
 
   # Stage for API Gateway (defining dev stage)
   ApiGatewayStage:
