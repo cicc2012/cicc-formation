@@ -1,0 +1,152 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  
+  # IAM Role for Lambda with permissions to access S3, Textract, Rekognition
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action: "sts:AssumeRole"
+            Principal:
+              Service: "lambda.amazonaws.com"
+      Policies:
+        - PolicyName: LambdaPermissionsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                Resource: "arn:aws:s3:::uco-cicc-media/*"
+              - Effect: "Allow"
+                Action:
+                  - "textract:DetectDocumentText"
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - "rekognition:DetectFaces"
+                Resource: "*"
+
+  # Lambda Function for Image Processing (Text Extraction and Face Recognition)
+  ImageProcessorLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ImageProcessorFunction
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python 3.13
+      Code:
+        S3Bucket: uco-cicc-media # Replace with the S3 bucket containing your Lambda code ZIP
+        S3Key: proj3/lambda_function.zip # Replace with the correct object key of the Lambda code
+      Timeout: 60 # Set timeout based on your use case
+
+  # API Gateway for Exposing Lambda Function via HTTP
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: ImageProcessorApi
+      Description: API to process images via Textract and Rekognition
+
+  # API Gateway Resource
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: process-image
+      RestApiId: !Ref ApiGateway
+
+  # API Gateway Method (POST) with CORS enabled
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref ApiGatewayResource
+      RestApiId: !Ref ApiGateway
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ImageProcessorLambda}invocations
+      MethodResponses:
+        - StatusCode: 200
+        - StatusCode: 500
+      IntegrationResponses:
+        - StatusCode: 200
+          ResponseTemplates:
+            application/json: ""
+        - StatusCode: 500
+          ResponseTemplates:
+            application/json: ""
+      Cors:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+        AllowHeaders:
+          - Content-Type
+
+  # Lambda Permission for API Gateway to invoke Lambda function
+  LambdaApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ImageProcessorLambda
+      Principal: apigateway.amazonaws.com
+
+  # Amplify Web App Hosting (Deployment from S3)
+  AmplifyApp:
+    Type: AWS::Amplify::App
+    Properties:
+      Name: WebApp
+      Repository: "https://github.com/your/repository"  # Optional if using GitHub repo, remove if using S3
+      OauthToken: !Sub "{{resolve:secretsmanager:GitHubOAuthToken:SecretString:GitHubOAuthToken}}" # Optional for GitHub OAuth Token if using GitHub
+      BuildSpec: |
+        version: 1.0
+        frontend:
+          phases:
+            preBuild:
+              commands:
+                - echo "Pre-building"
+            build:
+              commands:
+                - echo "Building"
+        artifacts:
+          baseDirectory: / # Path to your build output folder if necessary
+          files:
+            - '**/*'
+      EnvironmentVariables:
+        - Name: API_URL
+          Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/dev/process-image"
+
+  # Stage for API Gateway (defining dev stage)
+  ApiGatewayStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: dev
+      RestApiId: !Ref ApiGateway
+      DeploymentId: !Ref ApiGatewayDeployment
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "POST"
+          ThrottlingRateLimit: 100
+          ThrottlingBurstLimit: 200
+
+  # Deployment for API Gateway (needed for the Stage)
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiGatewayMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: dev
+
+Outputs:
+  APIUrl:
+    Description: "API Gateway URL"
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/dev/process-image"
+  AmplifyAppURL:
+    Description: "Amplify Web App URL"
+    Value: !GetAtt AmplifyApp.DefaultDomain
